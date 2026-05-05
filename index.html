@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Vanilla WebRTC Data Channel</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #1a1a1a; color: #fff; padding: 2rem; }
+    button { padding: 8px 16px; cursor: pointer; font-weight: bold; background: #007bff; border: none; color: white; border-radius: 4px; }
+    button:hover { background: #0056b3; }
+    pre { background: #2d2d2d; padding: 1rem; border-radius: 4px; min-height: 200px; }
+    .highlight { color: #00ff00; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC P2P (SCTP/DTLS)</h2>
+  <button id="btn-start">Initialize Peer & Send "hello world"</button>
+  <pre id="log">System Ready...\n</pre>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const log = (msg, isSuccess = false) => {
+      const span = isSuccess ? `<span class="highlight">${msg}</span>\n` : `${msg}\n`;
+      logEl.innerHTML += `> ${span}`;
+    };
+
+    // Generate a unique ID so the peer ignores its own signaling broadcasts
+    const peerId = crypto.randomUUID();
+
+    // Standard public STUN server to discover public IP
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    // --- Signaling Setup (SSE) ---
+    const sse = new EventSource('/signaling');
+
+    sse.onmessage = async (e) => {
+      const { sender, payload } = JSON.parse(e.data);
+      if (sender === peerId) return; // Ignore messages we sent
+
+      if (payload.type === 'offer') {
+        log('Received SDP Offer. Creating Answer...');
+
+        // Listen for the incoming data channel
+        pc.ondatachannel = event => {
+          event.channel.onmessage = msg => log(`[MESSAGE RECEIVED]: ${msg.data}`, true);
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(payload));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal(pc.localDescription);
+
+      } else if (payload.type === 'answer') {
+        log('Received SDP Answer. Connection negotiating...');
+        await pc.setRemoteDescription(new RTCSessionDescription(payload));
+
+      } else if (payload.candidate) {
+        // Optional: To strictly force TCP network transport instead of UDP,
+        // you would uncomment the following check. However, note that browsers
+        // often fail to generate local TCP candidates without a dedicated TURN server.
+        // if (payload.candidate.protocol !== 'tcp') return;
+
+        await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+      }
+    };
+
+    pc.onicecandidate = event => {
+      if (event.candidate) {
+        sendSignal({ candidate: event.candidate });
+      }
+    };
+
+    function sendSignal(payload) {
+      fetch('/message', {
+        method: 'POST',
+        body: JSON.stringify({ sender: peerId, payload })
+      });
+    }
+
+    // --- P2P Execution ---
+    document.getElementById('btn-start').onclick = async () => {
+      log('Creating Data Channel...');
+
+      // The data channel relies on SCTP, which guarantees reliability and order,
+      // and is automatically encrypted via DTLS.
+      const dc = pc.createDataChannel('secure-channel');
+
+      dc.onopen = () => {
+        log('Data Channel Open! Firing payload...', true);
+        dc.send('hello world');
+      };
+
+      // Generate the initial offer to begin P2P negotiation
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal(pc.localDescription);
+    };
+  </script>
+</body>
+</html>
