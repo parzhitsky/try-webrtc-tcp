@@ -13,7 +13,11 @@
 </head>
 <body>
   <h2>WebRTC P2P (SCTP/DTLS)</h2>
-  <button id="btn-start">Initialize Peer & Send "hello world"</button>
+  <button id="btn-start">Initialize Peer</button>
+  <div style="margin: 1rem 0;">
+    <input type="text" id="msg-input" placeholder="Type a message..." disabled style="padding: 8px; width: 250px; background: #2d2d2d; color: #fff; border: 1px solid #444; border-radius: 4px;">
+    <button id="btn-send" disabled>Send</button>
+  </div>
   <pre id="log">System Ready...\n</pre>
 
   <script>
@@ -31,6 +35,35 @@
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
 
+    let dc; // DataChannel reference
+
+    function setupDataChannel(channel) {
+      dc = channel;
+      dc.onopen = () => {
+        log('Data Channel Open!', true);
+        document.getElementById('msg-input').disabled = false;
+        document.getElementById('btn-send').disabled = false;
+      };
+      dc.onclose = () => {
+        log('Data Channel Closed.', false);
+        document.getElementById('msg-input').disabled = true;
+        document.getElementById('btn-send').disabled = true;
+      };
+      dc.onmessage = event => {
+        log(`[PEER]: ${event.data}`, true);
+      };
+    }
+
+    document.getElementById('btn-send').onclick = () => {
+      const input = document.getElementById('msg-input');
+      const msg = input.value;
+      if (msg && dc && dc.readyState === 'open') {
+        dc.send(msg);
+        log(`[YOU]: ${msg}`);
+        input.value = '';
+      }
+    };
+
     // --- Signaling Setup (SSE) ---
     const sse = new EventSource('/signaling');
 
@@ -43,7 +76,8 @@
 
         // Listen for the incoming data channel
         pc.ondatachannel = event => {
-          event.channel.onmessage = msg => log(`[MESSAGE RECEIVED]: ${msg.data}`, true);
+          log('Received incoming Data Channel.');
+          setupDataChannel(event.channel);
         };
 
         await pc.setRemoteDescription(new RTCSessionDescription(payload));
@@ -81,15 +115,8 @@
     // --- P2P Execution ---
     document.getElementById('btn-start').onclick = async () => {
       log('Creating Data Channel...');
-
-      // The data channel relies on SCTP, which guarantees reliability and order,
-      // and is automatically encrypted via DTLS.
-      const dc = pc.createDataChannel('secure-channel');
-
-      dc.onopen = () => {
-        log('Data Channel Open! Firing payload...', true);
-        dc.send('hello world');
-      };
+      const channel = pc.createDataChannel('secure-channel');
+      setupDataChannel(channel);
 
       // Generate the initial offer to begin P2P negotiation
       const offer = await pc.createOffer();
